@@ -1,0 +1,125 @@
+# ########################################
+# Emotion recognition from speech using ECAPA-TDNN
+# (smaller version with layer sizes and number
+# of attention heads divided by 2 compared to original)
+#
+#  * Authors: Hwidong Na & Mirco Ravanelli
+#  * Modified by Pierre-Yves Yanni
+# ########################################
+
+# Seed needs to be set at top of yaml, before objects with parameters are made
+seed: 1968
+__set_seed: !apply:torch.manual_seed [!ref <seed>]
+
+# Dataset will be downloaded to the `data_original`
+data_original: /gpfsscratch/rech/nou/uzn19yk/VoxForge/  # e.g., /workspace/data/IEMOCAP/IEMOCAP_full_release/Session
+# Data prepare function will create a modified dataset with structured data
+data_folder: /gpfsscratch/rech/nou/uzn19yk/VoxForge/
+# e.g, /workspace/data/IEMOCAP/IEMOCAP_ahsn_leave-two-speaker-out
+output_folder: !ref results/mean_basic/<seed>
+save_folder: !ref <output_folder>/save
+train_log: !ref <output_folder>/train_log.txt
+
+
+# different speakers for train, valid and test sets
+# (more challenging exercise: higher error rate)
+different_speakers: False
+prep_folder: vf_prep/
+# Path where data manifest files will be stored
+train_annotation: !ref <prep_folder>/train.json
+valid_annotation: !ref <prep_folder>/valid.json
+test_annotation: !ref <prep_folder>/test.json
+
+# The train logger writes training statistics to a file, as well as stdout.
+train_logger: !new:speechbrain.utils.train_logger.FileTrainLogger
+    save_file: !ref <train_log>
+
+error_stats: !name:speechbrain.utils.metric_stats.MetricStats
+    metric: !name:speechbrain.nnet.losses.classification_error
+        reduction: batch
+        
+sorting: ascending
+ckpt_interval_minutes: 15 # save checkpoint every N min
+projection_dim: 256
+# Training Parameters
+number_of_epochs: 10
+batch_size: 16
+gradient_accumulation: 2
+lr: 0.001
+weight_decay: 0.00002
+base_lr: 0.000001
+max_lr: !ref <lr>
+step_size: 1088  # 4 times number of iterations/epoch (2 to 10 is suggested)
+mode: exp_range # mode of learning rate schedule (triangular, triangular2, exp_range)
+gamma: 0.9998  # divides learning rate by 3 over the first 20 epochs
+sample_rate: 16000
+shuffle: True
+random_chunk: True
+drop_last: False
+
+avoid_if_longer_than: 15.0
+# Feature parameters
+n_mels: 64
+left_frames: 0
+right_frames: 0
+deltas: False
+
+# Number of emotions
+out_n_neurons: 5 # (anger, happiness, sadness, neutral)
+
+dataloader_options:
+    batch_size: !ref <batch_size>
+    shuffle: !ref <shuffle>
+    num_workers: 2  # 2 on linux but 0 works on windows
+    drop_last: !ref <drop_last>
+
+# Functions
+compute_features: !new:speechbrain.lobes.features.Fbank
+    n_mels: !ref <n_mels>
+    n_fft: 400
+embedding_model: !new:speechbrain.nnet.linear.Linear
+    input_size: 1280
+    n_neurons: !ref <projection_dim>
+
+classifier: !new:speechbrain.lobes.models.ECAPA_TDNN.Classifier
+    input_size: !ref <projection_dim>
+    out_neurons: !ref <out_n_neurons>
+ 
+epoch_counter: !new:speechbrain.utils.epoch_loop.EpochCounter
+    limit: !ref <number_of_epochs>
+
+mean_var_norm: !new:speechbrain.processing.features.InputNormalization
+    norm_type: sentence
+    std_norm: False
+
+modules:
+    compute_features: !ref <compute_features>
+    embedding_model: !ref <embedding_model>
+    classifier: !ref <classifier>
+    mean_var_norm: !ref <mean_var_norm>
+
+compute_cost: !new:speechbrain.nnet.losses.LogSoftmaxWrapper
+    loss_fn: !new:speechbrain.nnet.losses.AdditiveAngularMargin
+        margin: 0.2
+        scale: 30
+
+compute_error: !name:speechbrain.nnet.losses.classification_error
+
+opt_class: !name:torch.optim.Adam
+    lr: !ref <lr>
+    weight_decay: !ref <weight_decay>
+
+lr_annealing: !new:speechbrain.nnet.schedulers.CyclicLRScheduler
+    mode: !ref <mode>
+    gamma: !ref <gamma>
+    base_lr: !ref <base_lr>
+    max_lr: !ref <max_lr>
+    step_size: !ref <step_size>
+
+checkpointer: !new:speechbrain.utils.checkpoints.Checkpointer
+    checkpoints_dir: !ref <save_folder>
+    recoverables:
+        embedding_model: !ref <embedding_model>
+        classifier: !ref <classifier>
+        normalizer: !ref <mean_var_norm>
+        counter: !ref <epoch_counter>

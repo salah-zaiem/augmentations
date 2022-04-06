@@ -1,0 +1,158 @@
+# ################################
+# Model: VGG2 + LSTM + time pooling
+# Augmentation: TimeDomainSpecAugment
+# Additions: 2D pooling
+# Authors: Titouan Parcollet, Mirco Ravanelli, Peter Plantinga, Ju-Chieh Chou,
+# and Abdel HEBA 2020
+# ################################
+
+# Seed needs to be set at top of yaml, before objects with parameters are made
+seed: 1234
+__set_seed: !apply:torch.manual_seed [!ref <seed>]
+output_folder: !ref results/secondvanillaVC1/<seed>
+save_folder: !ref <output_folder>/save
+train_log: !ref <output_folder>/train_log.txt
+encoder_path: !ref <output_folder>/efficientnet.ckpt
+bili_path: !ref <output_folder>/bili.ckpt
+# Data files
+data_folder: /gpfsscratch/rech/nou/uzn19yk/cv-corpus-8.0-2022-01-19/ # e.g, /localscratch/cv-corpus-5.1-2020-06-22/fr
+train_tsv_file: !ref <data_folder>/train.tsv  # Standard CommonVoice .tsv files
+dev_tsv_file: !ref <data_folder>/dev.tsv  # Standard CommonVoice .tsv files
+test_tsv_file: !ref <data_folder>/test.tsv  # Standard CommonVoice .tsv files
+language: en # use 'fr' for French, 'it' for Italian, 'rw' for Kinyarwanda, 'en' for english
+csv_folder: /gpfsscratch/rech/nou/uzn19yk/wav2pase/sp_ssl-main/speechbrain/recipes/CommonVoice/ASR/seq2seq/results/CRDNN_it/1234/save/
+train_csv: !ref <csv_folder>/train.csv
+valid_csv: !ref <csv_folder>/dev.csv
+test_csv: !ref <csv_folder>/test.csv
+skip_prep: True  # Skip data preparation
+
+augmentation_file: best_params/VC1.json
+# We remove utterance slonger than 8s in the train/dev/test sets as
+# longer sentences certainly correspond to "open microphones".
+avoid_if_longer_than: 10.0
+avoid_if_shorter_than: 1.5
+accented_letters: False
+# Training parameters
+number_of_epochs: 100
+lr: 0.0001
+ctc_weight: 0.3
+sorting: ascending
+
+# With data_parallel batch_size is split into N jobs
+# With DDP batch_size is multiplied by N jobs
+# Must be 6 per GPU to fit 16GB of VRAM
+batch_size: 1024
+test_batch_size: 1024
+dataloader_options:
+    batch_size: !ref <batch_size>
+    num_workers: 10
+test_dataloader_options:
+    batch_size: !ref <test_batch_size>
+    num_workers: 10
+    
+apply_augmentations: True
+embedding_dim: 1280
+temperature: 0.2
+pooling_type: max
+noise: 0.001
+projection_dim: 512
+
+projection_activation: !name:torch.nn.Tanh
+
+    
+# Feature parameters (FBANKS etc)
+sample_rate: 16000
+n_fft: 400
+n_mels: 64
+
+# Model parameters
+activation: !name:torch.nn.LeakyReLU
+dropout: 0.15
+output_neurons: 500  # BPE size, index(blank/eos/bos) = 0
+
+
+similarity: !new:torch.nn.Bilinear
+    in1_features: !ref <projection_dim>
+    in2_features: !ref <projection_dim>
+    out_features: 1
+    bias: False
+epoch_counter: !new:speechbrain.utils.epoch_loop.EpochCounter
+    limit: !ref <number_of_epochs>
+
+# Frequency domain SpecAugment
+augmentation: !new:speechbrain.lobes.augment.SpecAugment
+    time_warp: True
+    time_warp_window: 5
+    time_warp_mode: bicubic
+    freq_mask: True
+    n_freq_mask: 2
+    time_mask: True
+    n_time_mask: 2
+    replace_with_zero: False
+    freq_mask_width: 30
+    time_mask_width: 40
+
+normalize: !new:speechbrain.processing.features.InputNormalization
+    norm_type: global
+
+compute_features: !new:speechbrain.lobes.features.Fbank
+    sample_rate: !ref <sample_rate>
+    n_fft: !ref <n_fft>
+    n_mels: !ref <n_mels>
+
+cnn_start: !new:torch.nn.Conv2d
+    in_channels: 1
+    out_channels: 3
+    kernel_size: 3 
+enc: !name:efficientnet_pytorch.EfficientNet.from_name
+    model_name: efficientnet-b0
+    include_top: True
+    drop_connect_rate: 0.1 
+    dropout_rate: 0.2
+projector: !new:speechbrain.nnet.linear.Linear
+    input_size: !ref <embedding_dim>
+    n_neurons: !ref <projection_dim>
+  
+
+log_softmax: !new:speechbrain.nnet.activations.Softmax
+    apply_log: True
+label_smoothing: 0.1
+
+train_loss: !new:torch.nn.CrossEntropyLoss
+modules:
+    cnn_start: !ref <cnn_start>
+    projector: !ref <projector>
+    normalize: !ref <normalize>
+    similarity: !ref <similarity>
+
+model: !new:torch.nn.ModuleList
+    - [!ref <cnn_start>, !ref <projector>, !ref <similarity>]
+
+opt_class: !name:torch.optim.Adam
+    lr: !ref <lr>
+    eps: 1.e-8
+
+#Cropping
+crop_length: 16000
+
+lr_annealing: !new:speechbrain.nnet.schedulers.NewBobScheduler
+    initial_value: !ref <lr>
+    improvement_threshold: 0.0025
+    annealing_factor: 0.9
+    patient: 1
+
+checkpointer: !new:speechbrain.utils.checkpoints.Checkpointer
+    checkpoints_dir: !ref <save_folder>
+    recoverables:
+        model: !ref <model>
+        scheduler: !ref <lr_annealing>
+        normalizer: !ref <normalize>
+        counter: !ref <epoch_counter>
+
+train_logger: !new:speechbrain.utils.train_logger.FileTrainLogger
+    save_file: !ref <train_log>
+
+error_rate_computer: !name:speechbrain.utils.metric_stats.ErrorRateStats
+
+cer_computer: !name:speechbrain.utils.metric_stats.ErrorRateStats
+    split_tokens: True

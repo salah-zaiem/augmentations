@@ -1,0 +1,1 @@
+{"effects_probs": {"bandreject": 0, "pitch": 0, "reverb": 0, "time_drop": 0, "clip": 0}, "band_scaler": 0.6, "pitch_shift_max": 300, "pitch_quick_prob": 1, "clip_min": 0.5, "clip_max": 1, "t_ms": 50, "room_scale_min": 0, "room_scale_max": 100, "reverberance_min": 50, "reverberance_max": 50, "damping_min": 50, "damping_max": 50}
